@@ -70,12 +70,27 @@ export class GmailWebhookController {
         return;
       }
 
-      // Immediately process new messages in real-time without getting blocked by Redis
       const previousHistoryId = user.gmail_history_id;
+
+      // Avoid processing older or duplicate history events
+      if (previousHistoryId && Number(historyId) <= Number(previousHistoryId)) {
+        this.logger.debug(`Skipping duplicate/older historyId ${historyId} for user ${user.id}`);
+        return;
+      }
+
+      // 1. Immediately update the stored history ID first so concurrent webhooks do not duplicate work
+      await this.supabase
+        .getServiceClient()
+        .from('users')
+        .update({ gmail_history_id: historyId })
+        .eq('id', user.id);
+
+      // 2. Process new messages in real-time
       if (previousHistoryId) {
         this.logger.log(`Fetching email changes for user ${user.id} since historyId ${previousHistoryId}...`);
-        const messageIds = await this.gmailService.getHistoryChanges(user.id, previousHistoryId);
-        this.logger.log(`Found ${messageIds.length} new message(s) to process with AI agent.`);
+        const rawMessageIds = await this.gmailService.getHistoryChanges(user.id, previousHistoryId);
+        const messageIds = Array.from(new Set(rawMessageIds));
+        this.logger.log(`Found ${messageIds.length} unique new message(s) to process with AI agent.`);
 
         for (const messageId of messageIds) {
           try {
@@ -87,15 +102,8 @@ export class GmailWebhookController {
           }
         }
       } else {
-        this.logger.warn(`No previous historyId found for user ${user.id}, initializing historyId.`);
+        this.logger.warn(`No previous historyId found for user ${user.id}, initialized historyId to ${historyId}.`);
       }
-
-      // Update the stored history ID
-      await this.supabase
-        .getServiceClient()
-        .from('users')
-        .update({ gmail_history_id: historyId })
-        .eq('id', user.id);
     } catch (error) {
       this.logger.error(
         `Error processing Gmail webhook: ${(error as Error).message}`,

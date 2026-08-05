@@ -9,6 +9,7 @@ import { TelegramService } from '../telegram/telegram.service';
 export class AgentService {
   private readonly logger = new Logger(AgentService.name);
   private readonly graph: ReturnType<typeof buildEmailClassifierGraph>;
+  private readonly activeProcessing = new Set<string>();
 
   constructor(
     private readonly gmailService: GmailService,
@@ -19,11 +20,15 @@ export class AgentService {
   }
 
   async processEmail(userId: string, messageId: string): Promise<void> {
-    try {
-      // Fetch the email content
-      const email = await this.gmailService.getMessage(userId, messageId);
+    const lockKey = `${userId}:${messageId}`;
+    if (this.activeProcessing.has(lockKey)) {
+      this.logger.debug(`Email ${messageId} is currently being processed by another concurrent request, skipping.`);
+      return;
+    }
+    this.activeProcessing.add(lockKey);
 
-      // Check if already processed
+    try {
+      // Check if already processed BEFORE calling Gmail API
       const { data: existing } = await this.supabase
         .getServiceClient()
         .from('email_records')
@@ -35,6 +40,18 @@ export class AgentService {
       if (existing) {
         this.logger.log(`Email ${messageId} already processed for user ${userId}`);
         return;
+      }
+
+      // Fetch the email content
+      let email: EmailMessage;
+      try {
+        email = await this.gmailService.getMessage(userId, messageId);
+      } catch (err: any) {
+        if (err?.message?.includes('Requested entity was not found') || err?.code === 404) {
+          this.logger.warn(`Email ${messageId} not found in Gmail (transient draft or removed by spam/label filter), skipping.`);
+          return;
+        }
+        throw err;
       }
 
       // Get user preferences and rules
@@ -83,6 +100,8 @@ export class AgentService {
         error: (error as Error).message,
         messageId,
       });
+    } finally {
+      this.activeProcessing.delete(lockKey);
     }
   }
 
