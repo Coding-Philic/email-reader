@@ -48,10 +48,7 @@ export class AuthController {
     let refreshToken = body.refresh_token;
     if (!refreshToken) {
       const existing = await this.authService.getGmailTokens(user.id);
-      refreshToken = existing?.refresh_token;
-      if (!refreshToken) {
-        throw new Error('Missing refresh_token and no existing token found in database');
-      }
+      refreshToken = existing?.refresh_token || 'NONE_PROVIDED_BY_OAUTH';
     }
 
     const expiry = body.expiry_date
